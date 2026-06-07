@@ -1,0 +1,30 @@
+# Node / npm
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# Environment variables (never commit real credentials)
+.env
+.env.local
+.env.*.local
+
+# n8n local data (if you ever run n8n from this folder)
+.n8n/
+n8n_data/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor folders
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts (none expected, but just in case)
+dist/
+build/
+*.log

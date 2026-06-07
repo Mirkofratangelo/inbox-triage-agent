@@ -1,0 +1,537 @@
+{
+  "name": "inbox triage agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "3819ab4b-39f9-4830-b8d5-2c5b66f4c09d",
+      "name": "When clicking 'Execute workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -688,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "simple": false,
+        "filters": {},
+        "options": {}
+      },
+      "id": "399fa0bf-6899-430a-8f5c-b3e41265488a",
+      "name": "Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -464,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const NOISE_SENDER_RE = /(no[-_.]?reply|noreply|donot[-_.]?reply|do[-_.]?not[-_.]?reply|notifications?@|news(letter)?@|mailer@|bounce@|newsletter)/i;\nconst NOISE_SUBJECT_RE = /(unsubscribe|view in browser|view this email in your browser|news(letter)?\\b|weekly digest|daily digest)/i;\n\nconst all = $input.all();\nconst out = [];\n\nfor (const item of all) {\n  const j = item.json ?? {};\n  const subject = j.subject ?? j.headers?.subject ?? '';\n  const fromAddr = j.from?.value?.[0]?.address ?? j.headers?.from ?? '';\n  const text = j.text ?? '';\n  const messageId = j.id ?? j.messageId ?? j.headers?.['message-id'] ?? '';\n\n  if (NOISE_SENDER_RE.test(fromAddr) || NOISE_SUBJECT_RE.test(subject)) {\n    continue;\n  }\n\n  out.push({\n    json: {\n      subject,\n      from: fromAddr,\n      text: text.slice(0, 4000),\n      messageId,\n    },\n  });\n}\n\nconsole.log(`Pre-filter: ${all.length} ricevute · ${out.length} passate · ${all.length - out.length} scartate`);\nreturn out;\n"
+      },
+      "id": "895be0e4-a041-448b-913e-40b36d126b73",
+      "name": "Pre-filter spam",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={\n  \"subject\": {{ JSON.stringify($json.subject) }},\n  \"from\": {{ JSON.stringify($json.from) }},\n  \"text\": {{ JSON.stringify($json.text) }}\n}",
+        "options": {
+          "systemMessage": "You are a triage assistant for a small e-commerce/business owner's email inbox.\nYou receive ONE email as JSON: { \"subject\", \"from\", \"text\" }.\nReturn ONLY a JSON object, no other text:\n{ \"category\": \"auto_bozza\" | \"richiede_te\" | \"rumore\", \"confidence\": 0.0-1.0, \"reasoning\": \"<max 8 words>\" }\nDecision, IN ORDER (first matching rule wins):\n1. Spam, promotions, newsletters, automated notifications -> \"rumore\"\n2. Anything involving a decision, money, a return/refund, a complaint, negative tone, a non-standard request, or ambiguity -> \"richiede_te\"\n3. Standard repetitive question (order status, shipping, sizes/variants, return policy) -> \"auto_bozza\"\nWhen in doubt between auto_bozza and richiede_te -> ALWAYS choose \"richiede_te\"."
+        }
+      },
+      "id": "6188889d-25ab-4468-aad9-eb33e8cafc69",
+      "name": "Classify email",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        0,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-6",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "maxTokensToSample": 300,
+          "temperature": 0
+        }
+      },
+      "id": "894603dc-b991-41bf-9442-bbf1421d4aab",
+      "name": "Anthropic - classify",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.5,
+      "position": [
+        -48,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const aiText = $input.item.json.output;\n\nlet classification;\ntry {\n  classification = JSON.parse(aiText);\n} catch (e) {\n  throw new Error(`Classify email non ha restituito JSON valido. Output ricevuto: ${(aiText ?? '').slice(0, 300)}`);\n}\n\nconst original = $('Pre-filter spam').item.json;\n\nreturn {\n  json: {\n    category: classification.category,\n    confidence: classification.confidence,\n    reasoning: classification.reasoning,\n    subject: original.subject,\n    from: original.from,\n    text: original.text,\n    messageId: original.messageId,\n    classifiedAt: new Date().toISOString(),\n    draft: null,\n    draftConfidence: null,\n    draftRationale: null,\n  },\n};\n"
+      },
+      "id": "6730828d-4a11-4db5-9d60-c92c21d89786",
+      "name": "Parse classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "auto_bozza"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "richiede_te"
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "1ae957c9-bfaa-44e6-b847-038a80eee74c",
+      "name": "Route by category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={\n  \"subject\": {{ JSON.stringify($json.subject) }},\n  \"from\": {{ JSON.stringify($json.from) }},\n  \"text\": {{ JSON.stringify($json.text) }}\n}",
+        "options": {
+          "systemMessage": "You are the reply assistant for a small e-commerce/business owner.\nYou receive ONE email classified as a standard FAQ: { \"subject\", \"from\", \"text\" }.\nWrite a brief draft reply (max 5 lines) that:\n1. Answers helpfully and politely\n2. Is brand-neutral (do NOT invent order numbers, links, or specific policies you don't have)\n3. Uses an informal, friendly tone\n4. Does NOT promise anything requiring a decision (refunds, exceptions); if it would, return an empty draft\nReturn ONLY valid JSON:\n{ \"reply_draft\": \"<the reply, or empty string>\", \"confidence\": 0.0-1.0, \"rationale\": \"<one sentence>\" }\nIf it is not really a standard FAQ, return reply_draft: \"\"."
+        }
+      },
+      "id": "8309a492-f1ac-46e1-a559-edc90d31bb73",
+      "name": "Generate bozza",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        720,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-6",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "maxTokensToSample": 500,
+          "temperature": 0.4
+        }
+      },
+      "id": "33af161a-d81d-47bc-805a-b00d2652580f",
+      "name": "Anthropic - draft",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.5,
+      "position": [
+        640,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const aiText = $input.item.json.output;\n\nlet reply;\ntry {\n  reply = JSON.parse(aiText);\n} catch (e) {\n  throw new Error(`Generate bozza non ha restituito JSON valido. Output ricevuto: ${(aiText ?? '').slice(0, 300)}`);\n}\n\nconst classified = $('Route by category').item.json;\nconst hasDraft = !!(reply.reply_draft && reply.reply_draft.length > 0);\n\nreturn {\n  json: {\n    category: classified.category,\n    confidence: classified.confidence,\n    reasoning: classified.reasoning,\n    subject: classified.subject,\n    from: classified.from,\n    text: classified.text,\n    messageId: classified.messageId,\n    classifiedAt: classified.classifiedAt,\n    draft: hasDraft ? reply.reply_draft : '',\n    draftConfidence: hasDraft ? (reply.confidence ?? null) : null,\n    draftRationale: reply.rationale ?? null,\n  },\n};\n"
+      },
+      "id": "3986b162-1452-44f1-8037-32b417ad36a4",
+      "name": "Parse bozza",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Bozze da rivedere"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "data": "={{ $json.classifiedAt }}",
+            "from": "={{ $json.from }}",
+            "subject": "={{ $json.subject }}",
+            "messaggio": "={{ $json.text }}",
+            "bozza": "={{ $json.draft }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "from",
+              "displayName": "from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "messaggio",
+              "displayName": "messaggio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "bozza",
+              "displayName": "bozza",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "d7333467-ba2f-49e5-a0ac-b78d67940bb6",
+      "name": "Sheets - Bozze da rivedere",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1184,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SPREADSHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Richiede te"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "data": "={{ $json.classifiedAt }}",
+            "from": "={{ $json.from }}",
+            "subject": "={{ $json.subject }}",
+            "messaggio": "={{ $json.text }}",
+            "motivo": "={{ $json.reasoning }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "from",
+              "displayName": "from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "messaggio",
+              "displayName": "messaggio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "motivo",
+              "displayName": "motivo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b1be32e9-c7ad-4823-bd05-76d8b513fcec",
+      "name": "Sheets - Richiede te",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        720,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Alternative inbox: not on Gmail?\nSwap the Gmail node with an Email Trigger (IMAP) node - same downstream shape (subject/from/text). Tune the Pre-filter spam regexes to whatever no-reply patterns your provider uses.",
+        "height": 176,
+        "width": 336,
+        "color": 5
+      },
+      "id": "24f6c84c-5980-4216-a890-02aeb32a2b1f",
+      "name": "Sticky Note d1510286",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -688,
+        560
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking 'Execute workflow'": {
+      "main": [
+        [
+          {
+            "node": "Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail": {
+      "main": [
+        [
+          {
+            "node": "Pre-filter spam",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pre-filter spam": {
+      "main": [
+        [
+          {
+            "node": "Classify email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify email": {
+      "main": [
+        [
+          {
+            "node": "Parse classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic - classify": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify email",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse classification": {
+      "main": [
+        [
+          {
+            "node": "Route by category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by category": {
+      "main": [
+        [
+          {
+            "node": "Generate bozza",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets - Richiede te",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate bozza": {
+      "main": [
+        [
+          {
+            "node": "Parse bozza",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic - draft": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate bozza",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse bozza": {
+      "main": [
+        [
+          {
+            "node": "Sheets - Bozze da rivedere",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "00000000-0000-0000-0000-000000000000",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
